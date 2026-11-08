@@ -365,10 +365,6 @@ Contributions are welcome. Fork the repo, create a branch (`git checkout -b feat
 
 Add a `LICENSE` file (e.g. MIT) and reference it here.
 
-## 👤 Author
-
-**Farhan Syed** · [@FarhanSyed987](https://github.com/FarhanSyed987)
-
 ---
 
 <div align="center">
