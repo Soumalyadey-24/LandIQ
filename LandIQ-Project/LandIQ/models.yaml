@@ -1,0 +1,138 @@
+# ---------------------------------------------------------------------------
+# LandIQ model manifest
+#
+# verification_status is evidence-graded and the levels are NOT interchangeable:
+#
+#   DOCUMENTED        read about it; nothing executed
+#   SOURCE_INSPECTED  repository code read; compatibility assessed
+#   DOWNLOAD_VERIFIED artifact confirmed fetchable (HTTP checked)
+#   LOAD_TESTED       weights actually loaded into memory
+#   INFERENCE_TESTED  a real image produced a real transcription, on the
+#                     hardware recorded in `measured_on`
+#
+# Nothing in this file is aspirational. If a number appears, it was measured.
+# ---------------------------------------------------------------------------
+
+manifest_version: 1
+updated: 2026-09-19
+
+policy:
+  script_coverage: >-
+    LandIQ recognises only the scripts listed under `verified_scripts` below.
+    Any other input is reported as UNSUPPORTED or UNKNOWN. The system does not
+    guess at a script it has not been shown to read, and never fabricates a
+    transcription.
+  confidence: >-
+    Confidence values are uncalibrated mean token probabilities taken from the
+    model's own logits. They are a triage signal only. Observed counter-example:
+    0.9463 confidence on a line where "39" was read as "33".
+  raw_output: >-
+    Model output is stored verbatim. Normalisation, transliteration and human
+    correction are separate, later, additive steps that never overwrite the raw
+    transcription.
+
+verified_scripts:   [latin]        # inference-tested on this project
+candidate_scripts:  [devanagari]   # checkpoint claims it; NOT tested here
+unsupported_scripts: >-
+  bengali, tamil, telugu, gujarati, gurmukhi, kannada, malayalam, odia, urdu,
+  arabic and everything else - no recognizer is registered for these.
+
+# ===========================================================================
+models:
+
+  - model_name: trocr-base-handwritten-en
+    architecture: VisionEncoderDecoder (ViT-base encoder + RoBERTa-base decoder)
+    parameters: 333.9M
+    checkpoint: microsoft/trocr-base-handwritten
+    revision: eaacaf452b06415df8f10bb6fad3a4c11e609406
+    source: https://huggingface.co/microsoft/trocr-base-handwritten
+    scripts: [latin]
+    languages: [en]
+    input_type: line            # one text LINE per call
+    license: MIT
+    device_support: [cpu]
+    download_mb: 1340
+    serialization: safetensors  # loaded with use_safetensors=True; no pickle
+    remote_code_required: false
+    verification_status: INFERENCE_TESTED
+    measured_on:
+      date: 2026-09-19
+      hardware: Apple Silicon arm64, CPU only, torch.set_num_threads(4)
+      stack: python 3.11.16 / torch 2.14.0 / transformers 4.46.3
+      dataset: Teklia/IAM-line, test split (held out), 8 lines, genuine human handwriting
+      cer: 0.0505          # 33/654 chars, NFC + whitespace-collapsed
+      wer: 0.1497          # 22/147 words
+      load_seconds_cached: 7.8
+      seconds_per_line_median: 1.62
+    observed_failure_modes:
+      - 'digits are not safe: "39" was read as "33" at 0.9463 confidence'
+      - 'hyphenated names break: "Stockton-on-Tees" -> "Stockton - on - Tee''s"'
+      - 'rare proper nouns are replaced by likelier words: "Parlophone" -> "Bishopsome"'
+    notes: >-
+      The decoder is an English language model, so it prefers plausible English
+      over faithful glyphs. Any numeric or identifier field it produces must
+      reach a human reviewer before a record is verified.
+
+  - model_name: trocr-devanagari-word
+    architecture: VisionEncoderDecoder (ViT-base encoder + RoBERTa-Nepali decoder)
+    checkpoint: paudelanil/trocr-devanagari-2
+    revision: 33cdd0cf18baca3938e4a585c621aa420f4eddcc
+    source: https://huggingface.co/paudelanil/trocr-devanagari-2
+    scripts: [devanagari]
+    languages: []               # decoder LM is Nepali; nothing verified here
+    input_type: word            # WORD level - feeding a line will fail
+    license: MIT
+    device_support: [cpu]
+    download_mb: 980
+    serialization: safetensors
+    remote_code_required: false
+    verification_status: DOWNLOAD_VERIFIED
+    training_data: c3rl/IIIT-INDIC-HW-WORDS-Hindi
+    notes: >-
+      Registered as a CANDIDATE only. Trained on Hindi handwritten WORDS with a
+      Nepali decoder language model (amitness/roberta-base-ne). No genuine
+      handwritten Devanagari sample has been run through it on this project, so
+      it has no measured accuracy here. It must not be described as verified
+      Hindi line recognition. Requires --allow-candidates to run, and its output
+      is labelled unvalidated.
+
+# ===========================================================================
+# Evaluated and NOT adopted. Kept documented and disabled, per project policy.
+rejected:
+
+  - model_name: PLATTER
+    source: https://github.com/IITB-LEAP-OCR/PLATTER
+    architecture: db_resnet50 detector + crnn_vgg16_bn recognizer (Indic docTR fork)
+    license: MIT
+    verification_status: DOCUMENTED
+    blocker: >-
+      No obtainable checkpoint. The published weights folder
+      (drive.google.com/drive/folders/1u12bVa6DD4Q2TusZG6aYuH7bCzYXnPcU) returns
+      HTTP 404 and the repository has zero GitHub releases. Verified 2026-09-19.
+      Without weights there is nothing to load, and random initialisation is not
+      an acceptable substitute.
+
+  - model_name: BhaashaHWOCR
+    source: https://github.com/NLTM-OCR/BhaashaHWOCR
+    architecture: ResCRNN + TPS/Affine STN (CTC) - NOT a transformer
+    license: MIT
+    scripts_claimed: [devanagari, bengali, tamil, telugu]
+    verification_status: SOURCE_INSPECTED
+    checkpoints_reachable: true     # hindi 88MB, bengali 78MB, tamil 79MB, telugu 79MB (HTTP 200, 2026-09-19)
+    blocker: >-
+      Will not run CPU-only as published. infer.py calls
+      torch.tensor([...]).cuda() unconditionally, and the else-branch of its
+      CUDA check calls torch.cuda.set_device() - so the absence of a GPU takes
+      the code path that requires one. requirements.txt additionally pins
+      numpy==1.24.1 plus nvidia-* wheels, which conflicts with LandIQ's numpy.
+    path_to_adoption: >-
+      Patch the three CUDA call sites behind a device flag in an isolated
+      environment, then re-grade. This is the strongest route to Bengali, which
+      no adopted model currently covers.
+
+  - model_name: microsoft/trocr-small-handwritten
+    verification_status: DOCUMENTED
+    blocker: >-
+      No license declared on the model repository, and it ships only
+      pytorch_model.bin (pickle) with no safetensors. Rejected on provenance and
+      serialization-safety grounds rather than on accuracy.

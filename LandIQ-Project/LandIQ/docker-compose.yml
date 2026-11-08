@@ -1,0 +1,129 @@
+# ---------------------------------------------------------------------------
+# LandIQ — full stack.  `docker compose up --build` is all that is required.
+#
+#   postgres  PostgreSQL 16 + PostGIS 3.4   (spatial database)
+#   redis     Celery broker and result backend
+#   backend   FastAPI + OpenCV + Tesseract  (creates schema, seeds demo data)
+#   worker    Celery worker running the same pipeline code
+#   frontend  Vite build served by nginx, proxying /api to the backend
+# ---------------------------------------------------------------------------
+name: landiq
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: landiq-db
+    environment:
+      POSTGRES_USER: landiq
+      POSTGRES_PASSWORD: landiq
+      POSTGRES_DB: landiq
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U landiq -d landiq"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: landiq-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: landiq-api
+    environment:
+      DEMO_MODE: "${DEMO_MODE:-true}"
+      ENVIRONMENT: docker
+      DATABASE_URL: postgresql+psycopg://landiq:landiq@postgres:5432/landiq
+      REDIS_URL: redis://redis:6379/0
+      CELERY_ENABLED: "true"
+      JWT_SECRET: "${JWT_SECRET:-landiq-docker-dev-secret-change-me}"
+      STORAGE_BACKEND: local
+      STORAGE_ROOT: /app/storage
+      TESSERACT_CMD: /usr/bin/tesseract
+      OCR_LANGUAGES: eng
+      SEED_ON_STARTUP: "true"
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:3000,http://localhost"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: landiq-worker
+    command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker",
+              "--loglevel=info", "--concurrency=2"]
+    environment:
+      DEMO_MODE: "${DEMO_MODE:-true}"
+      ENVIRONMENT: docker
+      DATABASE_URL: postgresql+psycopg://landiq:landiq@postgres:5432/landiq
+      REDIS_URL: redis://redis:6379/0
+      CELERY_ENABLED: "true"
+      JWT_SECRET: "${JWT_SECRET:-landiq-docker-dev-secret-change-me}"
+      STORAGE_BACKEND: local
+      STORAGE_ROOT: /app/storage
+      TESSERACT_CMD: /usr/bin/tesseract
+      # The API owns schema creation and seeding; the worker must not race it.
+      SEED_ON_STARTUP: "false"
+    # The image's HTTP health probe belongs to the API. A worker serves no HTTP,
+    # so ask Celery itself whether it is alive.
+    healthcheck:
+      test: ["CMD-SHELL",
+             "celery -A app.workers.celery_app.celery_app inspect ping -d celery@$$HOSTNAME | grep -q pong"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: landiq-web
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  storage:
